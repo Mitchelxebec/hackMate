@@ -11,12 +11,23 @@ const app = express();
 
 app.use(express.json());
 
-// CORS — allow configured frontend origin or all origins in development
+// CORS — allow all vercel deployments and localhost
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL
-      ? process.env.FRONTEND_URL.split(",").map((o) => o.trim())
-      : true, // allow all origins when FRONTEND_URL is not set
+    origin: (origin, callback) => {
+      // Allow requests with no origin (curl, Postman, server-to-server)
+      if (!origin) return callback(null, true);
+      const allowed =
+        origin.endsWith(".vercel.app") ||
+        origin === "http://localhost:5173" ||
+        origin === "http://localhost:3000" ||
+        (process.env.FRONTEND_URL
+          ? process.env.FRONTEND_URL.split(",")
+              .map((o) => o.trim())
+              .includes(origin)
+          : false);
+      callback(null, allowed);
+    },
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type"],
   }),
