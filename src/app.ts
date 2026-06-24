@@ -11,10 +11,12 @@ const app = express();
 
 app.use(express.json());
 
-// CORS — allow your frontend origin in production
+// CORS — allow configured frontend origin or all origins in development
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    origin: process.env.FRONTEND_URL
+      ? process.env.FRONTEND_URL.split(",").map((o) => o.trim())
+      : true, // allow all origins when FRONTEND_URL is not set
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type"],
   }),
