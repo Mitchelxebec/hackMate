@@ -33,7 +33,7 @@ export async function generateProjectPlan(
   projectIdea: string,
 ): Promise<GenerateResponse> {
   // STEP 1: Call Gemini
-  const rawJson = await callGemini(projectIdea);
+  const rawJson = await callAI(projectIdea);
 
   // STEP 2: Parse JSON
   let parsed: unknown;
@@ -80,25 +80,25 @@ interface GeminiResponse {
   }[];
 }
 
+interface GroqResponse {
+  choices: { message: { content: string } }[];
+}
+
+// ============================================================
+// PRIMARY: GEMINI
+// ============================================================
+
 async function callGemini(projectIdea: string, attempt = 1): Promise<string> {
-  console.log(`[generateService] Calling Gemini for: "${projectIdea}" (attempt ${attempt})`);
+  console.log(`[generateService] Calling Gemini (attempt ${attempt})...`);
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [
-          {
-            parts: [
-              {
-                text: `Generate a complete product specification for this idea:\n\n"${projectIdea}"`,
-              },
-            ],
-          },
-        ],
+        contents: [{ parts: [{ text: `Generate a complete product specification for this idea:\n\n"${projectIdea}"` }] }],
         generationConfig: { maxOutputTokens: 8192 },
       }),
     },
@@ -106,7 +106,6 @@ async function callGemini(projectIdea: string, attempt = 1): Promise<string> {
 
   if (!res.ok) {
     const error = await res.text();
-    // Retry up to 3 times on 503 (overloaded) with 3s delay
     if (res.status === 503 && attempt < 3) {
       console.log(`[generateService] Gemini 503 — retrying in 3s...`);
       await new Promise((r) => setTimeout(r, 3000));
@@ -117,9 +116,59 @@ async function callGemini(projectIdea: string, attempt = 1): Promise<string> {
 
   const data = (await res.json()) as GeminiResponse;
   const text = data.candidates[0]?.content.parts[0]?.text;
-
   if (!text) throw new Error("Gemini returned empty response");
 
   console.log(`[generateService] Gemini responded successfully`);
   return text;
+}
+
+// ============================================================
+// FALLBACK: GROQ
+// ============================================================
+
+async function callGroq(projectIdea: string): Promise<string> {
+  console.log(`[generateService] Falling back to Groq...`);
+
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `Generate a complete product specification for this idea:\n\n"${projectIdea}"` },
+      ],
+      max_tokens: 8192,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Groq API error ${res.status}: ${error}`);
+  }
+
+  const data = (await res.json()) as GroqResponse;
+  const text = data.choices[0]?.message.content;
+  if (!text) throw new Error("Groq returned empty response");
+
+  console.log(`[generateService] Groq responded successfully`);
+  return text;
+}
+
+// ============================================================
+// AI ROUTER — Gemini first, Groq fallback
+// ============================================================
+
+async function callAI(projectIdea: string): Promise<string> {
+  try {
+    return await callGemini(projectIdea);
+  } catch (err) {
+    console.warn(`[generateService] Gemini failed: ${String(err)}`);
+    console.log(`[generateService] Switching to Groq fallback...`);
+    return await callGroq(projectIdea);
+  }
 }
