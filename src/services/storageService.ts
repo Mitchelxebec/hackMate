@@ -23,7 +23,6 @@ export async function uploadToZeroG(payload: unknown): Promise<string> {
   console.log(`[0G Storage] Root hash: ${rootHash}`);
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
-  // Cast to any — SDK expects ethers v5 Signer types, we're on ethers v6
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const signer = new ethers.Wallet(privateKey, provider) as any;
 
@@ -34,8 +33,34 @@ export async function uploadToZeroG(payload: unknown): Promise<string> {
     throw new Error(`0G upload error: ${String(uploadErr)}`);
   }
 
-  // tx can be single file {rootHash, txHash} or fragmented {rootHashes[], txHashes[]}
   const hash = tx && "rootHash" in tx ? tx.rootHash : rootHash;
   console.log(`[0G Storage] Upload successful — hash: ${hash}`);
   return hash ?? rootHash ?? "";
+}
+
+export async function downloadFromZeroG(rootHash: string): Promise<unknown> {
+  console.log(`[0G Storage] Downloading hash: ${rootHash}`);
+
+  const indexer = new Indexer(INDEXER_RPC);
+
+  // 0G SDK downloads to a file path — use a temp location
+  const { tmpdir } = await import("os");
+  const { join } = await import("path");
+  const { readFile, unlink } = await import("fs/promises");
+
+  const tempPath = join(tmpdir(), `hackpilot-${Date.now()}.json`);
+
+  const downloadErr = await indexer.download(rootHash, tempPath, false);
+
+  if (downloadErr !== null) {
+    throw new Error(`0G download error: ${String(downloadErr)}`);
+  }
+
+  // Read and clean up
+  const contents = await readFile(tempPath, "utf-8");
+  await unlink(tempPath).catch(() => {/* best-effort cleanup */});
+
+  const parsed: unknown = JSON.parse(contents);
+  console.log(`[0G Storage] Download successful for hash: ${rootHash}`);
+  return parsed;
 }

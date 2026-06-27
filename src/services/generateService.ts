@@ -51,23 +51,27 @@ export async function generateProjectPlan(
   const sessionId = randomUUID();
   const generatedAt = new Date().toISOString();
 
-  const response: GenerateResponse = {
-    sessionId,
-    projectIdea,
-    generatedAt,
-    ...validated,
-  };
+  const payload = { sessionId, projectIdea, generatedAt, ...validated };
 
-  // STEP 5: Upload to 0G Storage in background — don't block the response
-  // If upload fails we log it but still return the generated plan
-  uploadToZeroG({ sessionId, projectIdea, generatedAt, ...validated })
-    .then((rootHash) => {
-      console.log(`[generateService] Stored on 0G — hash: ${rootHash}`);
-      // In a real app you'd persist this hash to a DB here
-    })
-    .catch((err: unknown) => {
-      console.error("[generateService] 0G upload failed (non-fatal):", err);
-    });
+  // STEP 5: Upload to 0G with a 15s timeout — non-blocking if it takes too long
+  let storageHash: string | undefined;
+  try {
+    const uploadWithTimeout = Promise.race([
+      uploadToZeroG(payload),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("0G upload timed out after 15s")), 15_000)
+      ),
+    ]);
+    storageHash = await uploadWithTimeout;
+    console.log(`[generateService] Stored on 0G — hash: ${storageHash}`);
+  } catch (err: unknown) {
+    console.error("[generateService] 0G upload failed (non-fatal):", err);
+  }
+
+  const response: GenerateResponse = {
+    ...payload,
+    ...(storageHash ? { storageHash } : {}),
+  };
 
   return response;
 }
@@ -88,8 +92,8 @@ interface GroqResponse {
 // PRIMARY: GEMINI
 // ============================================================
 
-async function callGemini(projectIdea: string, attempt = 1): Promise<string> {
-  console.log(`[generateService] Calling Gemini (attempt ${attempt})...`);
+async function callGemini(projectIdea: string): Promise<string> {
+  console.log(`[generateService] Calling Gemini...`);
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
@@ -106,11 +110,6 @@ async function callGemini(projectIdea: string, attempt = 1): Promise<string> {
 
   if (!res.ok) {
     const error = await res.text();
-    if (res.status === 503 && attempt < 3) {
-      console.log(`[generateService] Gemini 503 — retrying in 3s...`);
-      await new Promise((r) => setTimeout(r, 3000));
-      return callGemini(projectIdea, attempt + 1);
-    }
     throw new Error(`Gemini API error ${res.status}: ${error}`);
   }
 
