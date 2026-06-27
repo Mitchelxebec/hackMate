@@ -90,6 +90,8 @@ interface GroqResponse {
 
 // ============================================================
 // PRIMARY: GEMINI
+// Throws on ANY failure — HTTP error, quota, empty response,
+// error object in body — so the router always catches it
 // ============================================================
 
 async function callGemini(projectIdea: string): Promise<string> {
@@ -108,14 +110,21 @@ async function callGemini(projectIdea: string): Promise<string> {
     },
   );
 
-  if (!res.ok) {
-    const error = await res.text();
-    throw new Error(`Gemini API error ${res.status}: ${error}`);
+  // Read body once — Gemini returns 200 with error object on quota exceeded
+  const raw = await res.json() as Record<string, unknown>;
+
+  if (!res.ok || raw["error"]) {
+    const msg = (raw["error"] as Record<string, unknown>)?.["message"] ?? res.statusText;
+    throw new Error(`Gemini error ${res.status}: ${String(msg)}`);
   }
 
-  const data = (await res.json()) as GeminiResponse;
-  const text = data.candidates[0]?.content.parts[0]?.text;
-  if (!text) throw new Error("Gemini returned empty response");
+  const candidates = raw["candidates"] as GeminiResponse["candidates"] | undefined;
+  const text = candidates?.[0]?.content?.parts?.[0]?.text;
+  const finishReason = (candidates?.[0] as Record<string, unknown>)?.["finishReason"];
+
+  if (!text || (finishReason && finishReason !== "STOP" && finishReason !== "MAX_TOKENS")) {
+    throw new Error(`Gemini returned no usable text (finishReason: ${String(finishReason)})`);
+  }
 
   console.log(`[generateService] Gemini responded successfully`);
   return text;
@@ -126,7 +135,7 @@ async function callGemini(projectIdea: string): Promise<string> {
 // ============================================================
 
 async function callGroq(projectIdea: string): Promise<string> {
-  console.log(`[generateService] Falling back to Groq...`);
+  console.log(`[generateService] Calling Groq...`);
 
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -160,14 +169,16 @@ async function callGroq(projectIdea: string): Promise<string> {
 
 // ============================================================
 // AI ROUTER — Gemini first, Groq fallback
+// Any throw from callGemini (quota, error body, empty text)
+// immediately routes to Groq — no silent failures
 // ============================================================
 
 async function callAI(projectIdea: string): Promise<string> {
   try {
     return await callGemini(projectIdea);
   } catch (err) {
-    console.warn(`[generateService] Gemini failed: ${String(err)}`);
-    console.log(`[generateService] Switching to Groq fallback...`);
+    console.warn(`[generateService] Gemini failed — reason: ${String(err)}`);
+    console.log(`[generateService] Switching to Groq...`);
     return await callGroq(projectIdea);
   }
 }
